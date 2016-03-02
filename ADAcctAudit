@@ -1,0 +1,127 @@
+#$shell = New-Object -ComObject Wscript.Shell
+
+#Set-ExecutionPolicy RemoteSigned | echo $shell.sendkeys("Y`r`n")
+
+#***************************     FORMAT     ********************************
+# The following is to style the html formatting for the output created by the next command. 
+# This will create a Style Sheet (CSS) to format the data to be displayed in. This report will display properly 
+# in Outlook, Office365 Outlook, or any HTML capable webmail service
+
+
+$style = "<style>"
+$style = $style + "BODY{background-color:white;}"
+$style = $style + "TABLE{border-width: 1px;border-style: solid;border-color: black;border-collapse: collapse;}"
+$style = $style + "TH{border-width: 1px;padding: 4px;border-style: solid;border-color: black;background-color:yellow}"
+$style = $style + "TD{border-width: 1px;padding: 8px;border-style: solid;border-color: black;}"
+$style = $style + "</style>" 
+
+
+
+#***************************    SEARCH     ********************************
+
+# The above converts the lastlogon variable into human readable form
+
+# Searches the OU set in the command to find users that have not connected to the AD domain in XX number of days.
+# This then formats each listed name in alphabetical order and also lists whether or not the account is disabled.
+# Anything listed in the -pr section is for extendedproperties that you can select. If you want to add an extended property from
+# the website listed below, you will NEED to add that property in the -pr field or get-aduser will not fetch that information.
+# You will also need to add a new listing to correspond to that new additional property in the "Select-Object" section.
+# Most additional properties will follow the same format as the "Description" @{label} line so you can copy/paste and
+# replace the Description with whatever new property you are adding to this report.
+
+#                 Listing of ALL available parameters 
+# http://social.technet.microsoft.com/wiki/contents/articles/12037.active-directory-get-aduser-default-and-extended-properties.aspx
+#
+# You will need to change the " -SearchBase " to match your Active Directory OU you want to scan from.
+
+#Change the number in the $daysback to change the scope of how many days you want to go back from today's date.
+$daysback = 15
+
+$daysout = ((get-date).adddays(-$daysback) | Get-Date -Format "%M/%d/yyyy %h:mm:ss tt")
+
+# You will need to change the " -SearchBase " to match your Active Directory OU you want to scan from. 
+$searchone = get-aduser -f * -pr lastlogon,description,city,title -SearchBase "ou=testusers,dc=myomy,dc=wow"  |
+                  sort lastlogon  |    
+                  Select-Object @{Label = "Display Name";Expression = {$_.Name}}, 
+                  @{Label = "Logon Name";Expression = {$_.sAMAccountName}},
+                  @{label = "Title"; Expression = {$_.title}},
+                  @{Label = "Description";Expression = {$_.description}},
+                  @{N='Last Logon'; E={([datetime]::FromFileTime($_.lastlogon))}},   
+                  @{Label = "Account Status";Expression = {if (($_.Enabled -eq 'TRUE')  ) {'Enabled'} Else {'Disabled'}}} |
+                  Where-Object {! ($_.'last logon' -ge $daysout) -and ($_.'last logon' -ne "12/31/1600 6:00:00 PM")} | ConvertTo-Html -Fragment  
+                  
+# Below will display all accounts that have never been logged into. They will be displayed with "Last Logon" dates of 12/31/1600 6:00:00 PM 
+$searchtwo = get-aduser -f * -pr lastlogon,description,city,title -SearchBase "ou=testusers,dc=myomy,dc=wow"  |
+                  sort lastlogon  |    
+                  Select-Object @{Label = "Display Name";Expression = {$_.Name}}, 
+                  @{Label = "Logon Name";Expression = {$_.sAMAccountName}},
+                  @{label = "Title"; Expression = {$_.title}},
+                  @{Label = "Description";Expression = {$_.description}},
+                  @{N='Last Logon'; E={([datetime]::FromFileTime($_.lastlogon))}},   
+                  @{Label = "Account Status";Expression = {if (($_.Enabled -eq 'TRUE')  ) {'Enabled'} Else {'Disabled'}}} |
+                  Where-Object {! ($_.'last logon' -ne "12/31/1600 6:00:00 PM")} | ConvertTo-Html -fragment
+
+$searchbody = ConvertTo-Html -body "<h4><B> Possible Inactive Accounts </B></h4>$searchone 
+<br>
+<br>
+<br>
+<br>
+<h4><B> Unknown Accounts </B></h4>$searchtwo" -head $style | Out-String
+
+
+#***************************   SEND EMAIL     ********************************
+
+# Following creates an email to be sent to the email relay for each department Distribution List
+# This email is formatted in HTML and also cc'd to the IT Team
+ 
+# Syntax for next 2 lines are " NAME TO BE DISPLAYED <email@address.com>"
+# $towho will who you are sending the email TO: and $fromwho will be who is sending the email FROM:
+# Might be a good idea to use a service account or group mailbox as the FROM: 
+
+# It also seems like two mail addresses in each -to -from- -cc fields is the maximum you can set.
+# Any additional emails past two will still work the script correctly but will not send to the additional email addresses. 
+    $towho = " <WhoYourSendingTo@email.com> "
+    $fromwho = "IT Support Team <no-reply@YOUREMAILSERVER.com>"
+
+# This will output in "Jan/2016" format
+    $emailday = get-date -UFormat " %b / %Y "
+
+# This will be used with the above variable to create a subject for the email. 
+# Example: Feb / 2016  Report - Accounts not accessed in the past 90 days
+    $subject = "$emailday Report - Accounts not accessed within the past $daysback days" 
+
+   
+
+# Following Command will issue the actual "send mail" command to the email server (SMTP Relay) under the "$SMTPServer" variable.
+# You will need to change "$SMTPClient.Credentials" to the actual account that is able to send email through this server.
+# If you want to add another recipient add an additional " $SMTPMessage.To.Add ( "emailaddresshere" )" 
+
+
+#Uncomment this section if you are using SMTP-Relay that requires authentication
+
+$SMTPServer = "SMTP-mail.EMAILSERVER.com"
+
+$SMTPMessage = New-Object System.Net.Mail.MailMessage
+$SMTPMessage.From = $fromwho
+$SMTPMessage.To.Add( "$towho" )
+$SMTPMessage.To.Add( "ANYADDRESStoCC@EMAIL.com" )
+$SMTPMessage.Subject = $subject
+$SMTPMessage.IsBodyHTML = $true
+$SMTPMessage.Body = $searchbody
+
+$SMTPClient = New-Object Net.Mail.SmtpClient($SMTPServer, 587)
+$SMTPClient.EnableSsl = $true
+$SMTPClient.Credentials = New-object System.Net.NetworkCredential("SVCACCT@EMAILADDRESS.com", "P@ssw0rd!")
+$SMTPClient.Send($SMTPMessage)
+
+#///section end\\\
+
+#-----------------------------------------------------------------------------------------
+
+
+#///Uncomment this section if you DO NOT use SMTP-Relay authentication\\\
+#$cred = new-object Management.Automation.PSCredential "SVCACCT@EMAILADDRESS.com"
+#Send-MailMessage -to $towho -from $fromwho -subject $subject -body $searchbody -BodyAsHtml -SmtpServer SMTP-mail.EMAILSERVER.com -port 587 -Credential $cred -useSSL 
+
+
+#///section end\\\
